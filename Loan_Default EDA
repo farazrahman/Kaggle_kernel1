@@ -1,0 +1,366 @@
+### Determining the driving factors behind loan default through EDA ###
+
+# 1.1- Load libraries and data files
+library("readr") # data input
+library('tidyr') # data wrangling
+library('dplyr') # data manipulation
+library('stringr') # string manipulation
+library('ggplot2') # visualization
+library('ggthemes') # visualization
+library('corrplot') # visualization
+library('lubridate') # date and time
+library('purrr') # data manipulation
+
+
+#1.2- Reading in the data files
+
+loan <- read_csv("loan.csv")
+
+glimpse(loan) 
+summary(loan)
+
+#Observation:
+#i. There are 887379 observations 
+#ii. 74 variables with many columns having lots of NA values
+#iii- Target variable will be Loan status as it has information about loan paid, current and charged off(default).
+
+#2. DATA CLEANING
+#2.1- Since there are a lot of variables, we need to get rid of unwanted columns.
+#First we will check the number of missing or NA values in the data set
+
+colSums(is.na(loan))
+
+#Visualizing the missing data in all the columns
+missing_data <- loan %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_data <- gather(missing_data, key = "variables", value = "percent_missing") 
+ggplot(missing_data, aes(x = reorder(variables, percent_missing), y = percent_missing)) +
+  geom_bar(stat = "identity", fill = "purple")+coord_flip()+ theme_few()
+
+#Observation: 
+#i. total 22 variables have more tha 25% NA values
+#ii. 4 columns have more than 25% missing data
+#iii. 7 columns have less than 10% missing data
+
+#2.2- Its better to get rid of columns having more than 25% of missing data
+loan_cleaned <- loan[, -which(colMeans(is.na(loan)) > 0.25)]
+
+#2.3- Removing the redundant & duplicate variables 
+
+#i. id, member_id, url column can be removed as they have unique values for the purpose of loan identification only.
+#ii.zipcode column can be removed as it has only first three digits and that information can be obtained by the state column
+#iii. We can remove emp_title as well because it has more than 280000 unique emp_title and around 6% NA values and 
+#imputing them or deleting 50,000 rows from relevant data will lead to loss of data, hence, we will take out that column itself.
+#title column can be removed because it is redundant with purpose column which has fewer categories
+
+loan_cleaned <- within(loan_cleaned, rm('member_id', 'id', 'url', 'emp_title', "title","zip_code"))
+
+#2.4- We will also remove the variables which will not be present at the time of deciding whether to approve loan of a borrower or not and retain variables related to customer information and customer demographics.
+#Variables such as funded_amnt, funded_amnt_inv, issue_d, out_prncp, out_prncp_inv, total_pymnt, 
+#total_pymnt_inv, total_rec_int, total_rec_late_fee, total_rec_prncp etc. are basically customer payment behaiviour parameters which will not be available during decision making.
+
+loan_cleaned <- loan_cleaned[, -c(2,3,13,28,29,30,31,32,33,34,35,36,37,38,40)]
+
+
+#2.5- Converting incorrect data types
+
+#i. Handling Categorical variables-There are some Columns that are factor variables but are represented as characters. We need to convert them into factors
+
+loan_cleaned$term <- as.factor(loan_cleaned$term)
+loan_cleaned$grade <- as.factor(loan_cleaned$grade)
+loan_cleaned$sub_grade <- as.factor(loan_cleaned$sub_grade)
+loan_cleaned$emp_length <- as.factor(loan_cleaned$emp_length)
+loan_cleaned$home_ownership <- as.factor(loan_cleaned$home_ownership)
+loan_cleaned$verification_status <- as.factor(loan_cleaned$verification_status)
+loan_cleaned$loan_status <- as.factor(loan_cleaned$loan_status)
+loan_cleaned$application_type <- as.factor(loan_cleaned$application_type)
+loan_cleaned$pymnt_plan <- as.factor(loan_cleaned$pymnt_plan)
+loan_cleaned$initial_list_status <- as.factor(loan_cleaned$initial_list_status)
+loan_cleaned$policy_code <- as.factor(loan_cleaned$policy_code)
+
+#As we can see the variables "policy_code" and "pymnt_plan", have mostly one level of data in all rows, we can get rid of them as well
+
+loan_cleaned <- within(loan_cleaned, rm("policy_code", "pymnt_plan", "acc_now_delinq"))
+
+
+#ii. Handling Quantitative variables
+#The variables int_rate(interest rate on loan) and revol_util(revolving utilization) are in character format so they need to get converted to integer format
+
+loan_cleaned$tot_coll_amt <- as.numeric(loan_cleaned$tot_coll_amt)
+loan_cleaned$tot_cur_bal <- as.numeric(loan_cleaned$tot_cur_bal)
+loan_cleaned$total_rev_hi_lim <- as.numeric(loan_cleaned$total_rev_hi_lim)
+
+#iii. Converting incorrect data types- Date columns are in Chr format, so we will convert them into Date format
+
+loan_cleaned$earliest_cr_line <- parse_date(loan_cleaned$earliest_cr_line,format =  "%b-%Y")
+loan_cleaned$last_credit_pull_d <- parse_date(loan_cleaned$last_credit_pull_d,format =  "%b-%Y")
+
+
+
+#3- DATA PREPARATION
+
+loan_status.pct <- loan_cleaned %>% group_by(loan_status) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))
+
+ggplot(loan_status.pct, aes(x=reorder(loan_status, pct), y=pct, colour=loan_status, fill=loan_status)) +
+  geom_bar(stat="identity") +
+  geom_text(data=loan_status.pct, aes(label=paste0(round(pct*100,2),"%"),
+                                      y=pct+0.05), size=4) + coord_flip()
+
+#3.1- The target variable column Loan_status has 10 categories
+#3.2- Our goal is to find out the driving factors for loan getting charged off, so we will only consider the data from Fully paid and charged off category, where we know the exact outcome of the loan category.
+#3.3- And insert a new column with binary values for the fully paid column as 1 and charged off as 0.
+
+loan_cleaned <- filter(loan_cleaned, loan_cleaned$loan_status == "Fully Paid" | loan_cleaned$loan_status == "Charged Off")
+loan_cleaned <- mutate(loan_cleaned, binary_status=as.numeric(ifelse(loan_cleaned$loan_status == "Fully Paid", 1, 0))) 
+#now we have 252971 rows related to loans that are either fully paid or chraged off
+#29 variables
+
+#3.4- Dealing with redundant or duplicate variables-Correlation between quantitative variables
+
+corrplot(cor(loan_cleaned[,unlist(lapply(loan_cleaned, is.numeric))], use = "complete.obs"), type = "lower")
+
+#There are few columns such as tot_coll_amt, tot_cur_bal & tot_rev_hi_lim that have more than 25% missing data and also they are not correlated with the target variables.These variables can be dropped
+#We will drop the rows that have very less NA values 
+
+loan_cleaned <- loan_cleaned[, -c(26,27,28)]
+loan_cleaned <- na.omit(loan_cleaned)
+
+#Our final data set has total 252751 observations and 26 variables
+
+
+##EXPLORATORY DATA ANALYSIS##
+#4- UNIVARIATE ANALYSIS
+
+#4.1- Univariate analysis on Categorical variables
+
+loan_cleaned %>% group_by(term) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = term, y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Term") + ylab("Percent")+ theme_few()
+#Number of loans issued for 36 months are more
+
+loan_cleaned %>% group_by(grade) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(grade,-pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Grade") + ylab("Percent")+ theme_few()
+#Grade B accounts for 30% of the loans
+
+loan_cleaned %>% group_by(emp_length) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(emp_length, -pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Length of employment") + ylab("Percent")+ theme_few()
+
+loan_cleaned %>% group_by(home_ownership) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(home_ownership, -pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Home Ownership") + ylab("Percent")+ theme_few()
+#Rent and mortgage home owners account for 90% of loans
+
+loan_cleaned %>% group_by(verification_status) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(verification_status, -pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Verification Status") + ylab("Percent")+ theme_few()
+
+loan_cleaned %>% group_by(purpose) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(purpose, pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("Purpose of Loan") + ylab("Percent")+ coord_flip()+theme_few()
+#debt consolidation accounts for 60% of the loans borrowed 
+
+
+loan_cleaned %>% group_by(addr_state) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(addr_state, pct), y = pct)) + geom_bar(stat = "identity", fill = "purple")+xlab("State Wise Loan") + ylab("Percent")+ coord_flip()+theme_few()
+P_state <- ggplot(loan_cleaned, aes(x = addr_state, fill = addr_state ))+ geom_bar() + theme_few() + coord_flip()
+#loans applied in CA are more
+
+
+#4.2- Univarate analysis on Continous variables
+
+loan_cleaned %>% keep(is.numeric) %>% gather() %>%  ggplot(aes(value)) + facet_wrap(~ key, scales = "free") +
+  geom_histogram(bins=20, color= "black", fill= "#3399FF")
+
+
+#5- Segmented Univariate analysis
+#since our target is to know about the driver variables for loan being charged off, we will analyse the impact of other variables on loan_status.
+
+#5.1- Impact of Categorical variables on loan status
+
+termVsStatus <- ggplot(loan_cleaned, aes(x =term, fill = loan_status)) + geom_bar(stat='count', position='fill') +labs(x = 'Term') +
+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#i- Loans with 60 months term get defaulted more as compared to 36 months term
+
+gradeVsStatus <- ggplot(loan_cleaned, aes(x = grade, fill = loan_status)) + geom_bar(stat='count', position='fill') +labs(x = 'Grade') +
+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#ii- Default increases with increase in Grade from A-G, A means lowest risk of loan default and G means higher risk of loan default
+
+emp_lengthVsStatus <- ggplot(loan_cleaned, aes(x =emp_length, fill = loan_status)) + geom_bar(stat='count', position='fill') +labs(x = 'emp_length') +
+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#iii- length of employment doesn't seems to have much impact on loan status
+
+homeVsStatus <- ggplot(loan_cleaned, aes(x =home_ownership, fill = loan_status)) + geom_bar(stat='count', position='fill') +labs(x = 'home_ownership') +
+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#iv- The default rate in Own, rent and mortgage home status is almost same
+
+
+verificationVsStatus <- ggplot(loan_cleaned, aes(x =verification_status, fill = loan_status)) + geom_bar(stat='count', position='fill') +labs(x = 'Verification_status') +
+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#v- The default rate in verified category is slightly more than non verified categories
+
+loan_cleaned %>% group_by(purpose) %>% summarise(default.pct = (1-sum(binary_status)/n())) %>% ggplot(aes(x = reorder(purpose, default.pct), y = default.pct)) +
+  geom_bar(stat = "identity", fill = "purple")+coord_flip()+xlab("Purpose") + ylab("default percent")+ theme_few()
+#vi- The default rate in small business category is highest as compared to other categories
+
+state.status <- loan_cleaned %>% group_by(addr_state) %>% summarise(default.pct = (1-sum(binary_status)/n()))
+stateVsdefault <- ggplot(state.status, aes(x = reorder(addr_state, default.pct), y = default.pct)) +
+  geom_bar(stat = "identity", fill = "purple")+coord_flip()+xlab("States") + ylab("default percent")+ theme_few()
+#vii- The default rate in in TENESSE state is high as compared to other states
+
+
+#5.2- segmented univariate analysis- with segment as Loan status on continous variables
+#Correlation between loan status and various continous variables
+
+cor2 <- corrplot(cor(loan_cleaned[,unlist(lapply(loan_cleaned, is.numeric))], use = "complete.obs"), type = "lower", method = "number")
+
+#observation:
+#i. loan status has a negative correlation with loan amount, int_rate, dti, inq_last_6months, revol_util
+#ii. we will further investigate the impact of these parameters on loan status
+
+ggplot(loan_cleaned, aes(x = loan_status, y = loan_amnt, fill = loan_status)) + geom_boxplot()
+
+ggplot(loan_cleaned, aes(x= loan_amnt)) + geom_density(aes(fill = as.factor(loan_status)))+  scale_fill_discrete(name="Loan_Status") +xlab("Loan_amount")+theme_few()
+#i. Incidences of loan default can be seen when the loan amount is above 10,000
+
+
+ggplot(loan_cleaned, aes(x= int_rate, fill = loan_status)) + geom_histogram(bins = 10, position = "fill")+  scale_fill_discrete(name="Loan_Status") +xlab("Interest Rate")+theme_few()
+ggplot(loan_cleaned, aes(x = loan_status, y = int_rate, fill = loan_status)) + geom_boxplot()
+#ii. High interest rate is definitely linked to more number of defaults except for few outliers
+
+ggplot(loan_cleaned, aes(x= dti, fill = loan_status)) + geom_density()+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#iii. default increases when the dti is above 20
+
+
+ggplot(loan_cleaned, aes(x= factor(inq_last_6mths), fill = factor(loan_status))) + geom_bar(position = "fill")+  scale_fill_discrete(name="Loan_Status") + xlab("Inquiry in Last 6 months")+theme_few()
+ggplot(loan_cleaned, aes(x = loan_status, y = inq_last_6mths, fill = loan_status)) + geom_boxplot()
+#iv. The Median and IQR is high for inquiries made in last 6 months for the Charged off category as compared to Fully paid category, except for few outliers.
+
+ggplot(loan_cleaned, aes(x= pub_rec, fill = factor(loan_status))) + geom_bar(position = "fill")+  scale_fill_discrete(name="Loan_Status") +theme_few()
+
+
+ggplot(subset(loan_cleaned, revol_util <= 100), aes(x= revol_util, fill = loan_status)) + geom_density()+  scale_fill_discrete(name="Loan_Status") +theme_few()
+#v. Incidences of default can be seen when the revolving utilization percent is higher than 50.
+
+
+#5.3- Bivariate Analysis
+
+#We will see the impact of highly correlated variable on each other
+#From the cor2 plot we can see that we have positive correlation among the variables,
+# i. dti & Int_rate
+#ii. Annual_income & Loan_amnt
+#iii. Inq_last_6mths & int_rate
+#iv. open_acc & dti
+#v. revol_bal & loan_amnt
+#vi. revol_bal & annual_inc
+#vii. revol_bal & open_acc
+#viii. revol_util & int_rate
+#ix. revol_util & dti
+#x. total_acc & open_acc
+
+#Negative correlation between
+#i. dti & annual_income
+#ii. revol_bal & pub_rec
+#iii. revol_util & inq_last_6mths
+#iv. open_acc and revol_util
+
+
+#i. dti Vs interest rate
+
+ggplot(loan_cleaned, aes(x = dti, y = int_rate, color = loan_status)) + geom_point(position = "jitter")
+
+
+#ii. Annual_income Vs Loan amount
+
+ggplot(loan_cleaned, aes(x = annual_inc, y = loan_amnt, color = loan_status)) + geom_point(position = "jitter")
+
+#iii. Inquiry last 6 months Vs interest rate
+
+ggplot(loan_cleaned, aes(x = factor(inq_last_6mths), y = int_rate, color = loan_status)) + geom_point(position = "jitter")
+
+#iv. open_acc & dti
+
+ggplot(loan_cleaned, aes(x = open_acc, y = dti, color = loan_status)) + geom_point(position = "jitter")
+
+#v. revolving balance Vs loan amount
+
+ggplot(loan_cleaned, aes(x = revol_bal, y = loan_amnt, color = loan_status)) + geom_point(position = "jitter")
+
+#vi. revolving balance Vs annual income
+
+ggplot(loan_cleaned, aes(x = revol_bal, y = annual_inc, color = loan_status)) + geom_point(position = "jitter")
+
+
+#vii. revolving balance Vs open_acc
+
+ggplot(loan_cleaned, aes(x = open_acc, y = revol_bal, color = loan_status)) + geom_point(position = "jitter")
+
+
+#viii. revolving utilization Vs Interest rate
+
+ggplot(filter(loan_cleaned, revol_util <= 100), aes(x = int_rate, y = revol_util, color = loan_status)) + geom_jitter()
+
+#ix. revolving_utilization Vs dti
+
+ggplot(filter(loan_cleaned, revol_util <= 100), aes(x = revol_util, y = dti, color = loan_status)) + geom_point()
+
+#x. total acc Vs open_acc
+
+ggplot(loan_cleaned, aes(x = total_acc, y = open_acc, color = loan_status)) + geom_point()
+
+#Negative correlation
+
+#i. dti Vs annual income
+
+
+ggplot(filter(loan_cleaned,annual_inc < 2500000), aes(x = annual_inc, y = dti, color = loan_status)) + geom_point()
+
+
+#ii. revolving utilization Vs inquiry last 6 months
+
+
+ggplot(loan_cleaned, aes(x = inq_last_6mths, y = revol_util, color = loan_status)) + geom_point()
+
+#ii. revolving utilization Vs open account
+
+
+ggplot(filter(loan_cleaned,revol_util <= 100), aes(x = open_acc, y = revol_util, color = loan_status)) + geom_point()
+
+
+#DERIVED METRICS
+
+#i. Ratio of open_acc and total_acc
+
+loan_cleaned <- mutate(loan_cleaned, ratio = open_acc/total_acc)
+options(scipen = "999")
+ggplot(loan_cleaned, aes(x = ratio, fill = loan_status)) + geom_density() + xlab("Ratio of open_acc & total_acc") + theme_few()
+
+#Instances of default increases when the account ratio is above 0.5
+
+#ii.number of years between earliest_cr_line to get length of credit history
+loan_cleaned <- mutate(loan_cleaned, credit_history.d = year(earliest_cr_line))
+
+ggplot(loan_cleaned, aes(x= (pull.d-credit_history.d), fill = loan_status)) + geom_density() +xlab("Credit History") +theme_few()
+
+# Credit History Grouping
+
+loan_cleaned <- mutate(loan_cleaned, cr_hist = pull.d-credit_history.d)
+
+loan_cleaned$cr_hist_grp[loan_cleaned$cr_hist <= 5] <- '<5_yrs'
+loan_cleaned$cr_hist_grp[loan_cleaned$cr_hist > 5 & loan_cleaned$cr_hist <= 10] <- '5-10_yrs'
+loan_cleaned$cr_hist_grp[loan_cleaned$cr_hist > 10 & loan_cleaned$cr_hist <= 15] <- '10-15_yrs'
+loan_cleaned$cr_hist_grp[loan_cleaned$cr_hist > 15 & loan_cleaned$cr_hist <= 20] <- '15-20_yrs'
+loan_cleaned$cr_hist_grp[loan_cleaned$cr_hist > 20] <- '>20_yrs'
+
+ggplot(loan_cleaned, aes(x= reorder(cr_hist_grp, cr_hist), fill = loan_status)) + geom_bar(position = "fill") + xlab("Credit_History_Length")+theme(axis.text.x = element_text(angle = 20, vjust = 0.8, hjust=1))
+
+# Loan Default rate is more for those who have less than 5 years of credit history
+
+
+#v. Income group
+
+loan_cleaned <- mutate(loan_cleaned, inc_grp = annual_inc)
+
+loan_cleaned$inc_grp[loan_cleaned$annual_inc <= 50000] <- "verylow_inc"
+loan_cleaned$inc_grp[loan_cleaned$annual_inc > 50000 & loan_cleaned$annual_inc <= 80000] <- 'low_inc'
+loan_cleaned$inc_grp[loan_cleaned$annual_inc > 80000 & loan_cleaned$annual_inc <= 120000] <- 'middle_inc'
+loan_cleaned$inc_grp[loan_cleaned$annual_inc > 120000 & loan_cleaned$annual_inc <= 240000] <- 'high_inc'
+loan_cleaned$inc_grp[loan_cleaned$annual_inc > 240000] <- 'veryhigh_inc'
+
+ggplot(loan_cleaned, aes(x= reorder(inc_grp, annual_inc), fill = loan_status, order = loan_status)) + geom_bar(position = "fill") + xlab("Income_groups")+theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1))
+
+# Default rate is slightly higher in very low income group
